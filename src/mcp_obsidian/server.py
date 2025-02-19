@@ -132,13 +132,19 @@ class SSEManager:
                 await queue.put(f"event: {event_type}\ndata: {event_data}\n\n")
 
 sse_manager = SSEManager()
+
+# Get root path from environment variable
+root_path = os.getenv("FASTAPI_ROOT_PATH", "")
+
 fastapi_app = FastAPI(
     title="MCP Obsidian",
     description="MCP server to work with Obsidian via the remote REST plugin",
     version="0.2.1",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    root_path=root_path,
+    root_path_in_servers=True
 )
 
 # Enable CORS
@@ -150,6 +156,31 @@ fastapi_app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add middleware to handle root path
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class RootPathMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if "application/json" in response.headers.get("content-type", ""):
+            try:
+                body = response.body.decode()
+                data = json.loads(body)
+                if "paths" in data:
+                    # Update paths to include root path
+                    new_paths = {}
+                    for path, methods in data["paths"].items():
+                        new_paths[f"{root_path}{path}"] = methods
+                    data["paths"] = new_paths
+                    response.body = json.dumps(data).encode()
+                    response.headers["content-length"] = str(len(response.body))
+            except:
+                pass
+        return response
+
+if root_path:
+    fastapi_app.add_middleware(RootPathMiddleware)
 
 @fastapi_app.get("/sse/{client_id}")
 async def sse_endpoint(client_id: str):
