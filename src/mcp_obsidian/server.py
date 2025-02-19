@@ -3,7 +3,7 @@ import logging
 import asyncio
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, List, Optional
 import os
 from dotenv import load_dotenv
 from mcp.server import Server
@@ -13,8 +13,9 @@ from mcp.types import (
     ImageContent,
     EmbeddedResource,
 )
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 import uvicorn
 
 load_dotenv()
@@ -36,6 +37,52 @@ port = int(os.getenv("PORT", "8000"))
 logger.info(f"Configured to run on port {port}")
 
 app = Server("mcp-obsidian")
+
+# Pydantic models for request/response
+class ListFilesResponse(BaseModel):
+    files: List[str] = Field(description="List of files in the vault or directory")
+
+class FileContentResponse(BaseModel):
+    content: str = Field(description="Content of the file")
+
+class DirPathRequest(BaseModel):
+    dirpath: str = Field(description="Path to list files from (relative to your vault root)")
+
+class FilePathRequest(BaseModel):
+    filepath: str = Field(description="Path to the file (relative to vault root)")
+
+class SearchRequest(BaseModel):
+    query: str = Field(description="Text to search for in the vault")
+    context_length: Optional[int] = Field(default=100, description="How much context to return around the matching string")
+
+class SearchMatch(BaseModel):
+    context: str = Field(description="Context around the match")
+    match_position: Dict[str, int] = Field(description="Start and end positions of the match")
+
+class SearchResult(BaseModel):
+    filename: str = Field(description="Name of the file containing matches")
+    score: float = Field(description="Search relevance score")
+    matches: List[SearchMatch] = Field(description="List of matches in this file")
+
+class SearchResponse(BaseModel):
+    results: List[SearchResult] = Field(description="Search results across files")
+
+class AppendContentRequest(BaseModel):
+    filepath: str = Field(description="Path to the file (relative to vault root)")
+    content: str = Field(description="Content to append to the file")
+
+class PatchContentRequest(BaseModel):
+    filepath: str = Field(description="Path to the file (relative to vault root)")
+    operation: str = Field(description="Operation to perform (append, prepend, or replace)")
+    target_type: str = Field(description="Type of target to patch")
+    target: str = Field(description="Target identifier (heading path, block reference, or frontmatter field)")
+    content: str = Field(description="Content to insert")
+
+class BatchFileContentsRequest(BaseModel):
+    filepaths: List[str] = Field(description="List of file paths to get contents for")
+
+class BatchFileContentsResponse(BaseModel):
+    contents: Dict[str, str] = Field(description="Map of filepath to file contents")
 
 tool_handlers = {}
 def add_tool_handler(tool_class: tools.ToolHandler):
@@ -134,7 +181,7 @@ class SSEManager:
 sse_manager = SSEManager()
 fastapi_app = FastAPI(
     title="MCP Obsidian",
-    description="MCP server to work with Obsidian via the remote REST plugin",
+    description="API server to work with Obsidian via the remote REST plugin",
     version="0.2.1",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -226,6 +273,77 @@ async def list_tools_http():
             for tool in tools
         ]
     }
+
+@fastapi_app.get("/vault/files", response_model=ListFilesResponse, tags=["Files"])
+async def list_files_in_vault():
+    """Lists all files and directories in the root directory of your Obsidian vault."""
+    tool_handler = tools.ListFilesInVaultToolHandler()
+    result = tool_handler.run_tool({})
+    return {"files": json.loads(result[0].text)}
+
+@fastapi_app.post("/dir/files", response_model=ListFilesResponse, tags=["Files"])
+async def list_files_in_dir(request: DirPathRequest):
+    """Lists all files and directories that exist in a specific Obsidian directory."""
+    tool_handler = tools.ListFilesInDirToolHandler()
+    result = tool_handler.run_tool({"dirpath": request.dirpath})
+    return json.loads(result[0].text)
+
+@fastapi_app.post("/file/contents", response_model=FileContentResponse, tags=["Files"])
+async def get_file_contents(request: FilePathRequest):
+    """Return the content of a single file in your vault."""
+    tool_handler = tools.GetFileContentsToolHandler()
+    result = tool_handler.run_tool({"filepath": request.filepath})
+    return json.loads(result[0].text)
+
+@fastapi_app.post("/search", response_model=SearchResponse, tags=["Search"])
+async def search(request: SearchRequest):
+    """Simple search for documents matching a specified text query across all files in the vault."""
+    tool_handler = tools.SearchToolHandler()
+    result = tool_handler.run_tool({
+        "query": request.query,
+        "context_length": request.context_length
+    })
+    return {"results": json.loads(result[0].text)}
+
+@fastapi_app.post("/file/append", tags=["Files"])
+async def append_content(request: AppendContentRequest):
+    """Append content to a new or existing file in the vault."""
+    tool_handler = tools.AppendContentToolHandler()
+    result = tool_handler.run_tool({
+        "filepath": request.filepath,
+        "content": request.content
+    })
+    return {"message": result[0].text}
+
+@fastapi_app.post("/file/patch", tags=["Files"])
+async def patch_content(request: PatchContentRequest):
+    """Insert content into an existing note relative to a heading, block reference, or frontmatter field."""
+    tool_handler = tools.PatchContentToolHandler()
+    result = tool_handler.run_tool({
+        "filepath": request.filepath,
+        "operation": request.operation,
+        "target_type": request.target_type,
+        "target": request.target,
+        "content": request.content
+    })
+    return {"message": result[0].text}
+
+@fastapi_app.post("/search/complex", response_model=SearchResponse, tags=["Search"])
+async def complex_search(request: SearchRequest):
+    """Complex search for documents matching a specified text query across all files in the vault."""
+    tool_handler = tools.ComplexSearchToolHandler()
+    result = tool_handler.run_tool({
+        "query": request.query,
+        "context_length": request.context_length
+    })
+    return {"results": json.loads(result[0].text)}
+
+@fastapi_app.post("/file/batch-contents", response_model=BatchFileContentsResponse, tags=["Files"])
+async def batch_get_file_contents(request: BatchFileContentsRequest):
+    """Return the content of multiple files in your vault."""
+    tool_handler = tools.BatchGetFileContentsToolHandler()
+    result = tool_handler.run_tool({"filepaths": request.filepaths})
+    return json.loads(result[0].text)
 
 # Modify the main function to run both MCP and FastAPI servers
 async def main():
