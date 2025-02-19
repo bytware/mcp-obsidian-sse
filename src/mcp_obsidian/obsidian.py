@@ -16,7 +16,7 @@ class Obsidian():
         self.host = host
         self.port = port
         self.verify_ssl = verify_ssl
-        self.timeout = (3, 6)
+        self.timeout = (10, 30)
 
     def get_base_url(self) -> str:
         return f'{self.protocol}://{self.host}:{self.port}'
@@ -42,10 +42,16 @@ class Obsidian():
         url = f"{self.get_base_url()}/vault/"
         
         def call_fn():
+            print(f"Making request to: {url}")
+            print(f"Headers: {self._get_headers()}")
             response = requests.get(url, headers=self._get_headers(), verify=self.verify_ssl, timeout=self.timeout)
+            print(f"Response status: {response.status_code}")
+            print(f"Response content: {response.content}")
             response.raise_for_status()
             
-            return response.json()['files']
+            data = response.json()
+            print(f"Parsed JSON: {data}")
+            return data  # Return the full response instead of just data['files']
 
         return self._safe_call(call_fn)
 
@@ -54,10 +60,16 @@ class Obsidian():
         url = f"{self.get_base_url()}/vault/{dirpath}/"
         
         def call_fn():
+            print(f"Making request to: {url}")
+            print(f"Headers: {self._get_headers()}")
             response = requests.get(url, headers=self._get_headers(), verify=self.verify_ssl, timeout=self.timeout)
+            print(f"Response status: {response.status_code}")
+            print(f"Response content: {response.content}")
             response.raise_for_status()
             
-            return response.json()['files']
+            data = response.json()
+            print(f"Parsed JSON: {data}")
+            return data['files']
 
         return self._safe_call(call_fn)
 
