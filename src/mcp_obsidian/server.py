@@ -17,8 +17,14 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
-from openapi_pydantic import OpenAPI, Schema, Reference, Components, Paths
 from copy import deepcopy
+
+# Try to import openapi-pydantic, but don't fail if it's not available
+try:
+    from openapi_pydantic import OpenAPI, Schema, Reference, Components, Paths
+    HAS_OPENAPI_PYDANTIC = True
+except ImportError:
+    HAS_OPENAPI_PYDANTIC = False
 
 load_dotenv()
 
@@ -187,68 +193,80 @@ def get_openapi_schema():
     if not fastapi_app.openapi_schema:
         openapi_schema = fastapi_app.openapi()
         
-        # Parse the OpenAPI schema
-        try:
-            schema = OpenAPI.parse_obj(openapi_schema)
-        except Exception as e:
-            logger.error(f"Error parsing OpenAPI schema: {e}")
-            return openapi_schema
+        if HAS_OPENAPI_PYDANTIC:
+            try:
+                # Use openapi-pydantic for enhanced schema handling
+                schema = OpenAPI.parse_obj(openapi_schema)
+                
+                # Clean up schema references
+                if schema.components and schema.components.schemas:
+                    new_schemas: Dict[str, Union[Schema, Reference]] = {}
+                    for key, schema_obj in schema.components.schemas.items():
+                        # Remove duplicate prefixes while keeping one obsidian_ prefix
+                        new_key = key
+                        if key.startswith("obsidian_"):
+                            parts = key.split("obsidian_")
+                            new_key = f"obsidian_{parts[-1]}"
+                        new_schemas[new_key] = schema_obj
+                    
+                    # Update the components with cleaned schemas
+                    schema.components.schemas = new_schemas
 
-        # Clean up schema references
-        if schema.components and schema.components.schemas:
-            new_schemas: Dict[str, Union[Schema, Reference]] = {}
-            for key, schema_obj in schema.components.schemas.items():
-                # Remove duplicate prefixes while keeping one obsidian_ prefix
-                new_key = key
-                if key.startswith("obsidian_"):
-                    parts = key.split("obsidian_")
-                    new_key = f"obsidian_{parts[-1]}"
-                new_schemas[new_key] = schema_obj
-            
-            # Update the components with cleaned schemas
-            schema.components.schemas = new_schemas
+                # Update schema references in paths
+                if schema.paths:
+                    for path in schema.paths.values():
+                        for operation in path.__dict__.values():
+                            if not operation:
+                                continue
+                            if operation.requestBody:
+                                _update_schema_refs(operation.requestBody)
+                            if operation.responses:
+                                for response in operation.responses.values():
+                                    if response.content:
+                                        for media_type in response.content.values():
+                                            if media_type.schema_:
+                                                _update_schema_refs(media_type.schema_)
 
-        # Update schema references in paths
-        if schema.paths:
-            for path in schema.paths.values():
-                for operation in path.__dict__.values():
-                    if not operation:
-                        continue
-                    if operation.requestBody:
-                        _update_schema_refs(operation.requestBody)
-                    if operation.responses:
-                        for response in operation.responses.values():
-                            if response.content:
-                                for media_type in response.content.values():
-                                    if media_type.schema_:
-                                        _update_schema_refs(media_type.schema_)
+                # Set proper server configuration
+                schema.servers = [
+                    {
+                        "url": f"http://localhost:{port}",
+                        "description": "Local development server"
+                    }
+                ]
 
-        # Set proper server configuration
-        schema.servers = [
-            {
-                "url": f"http://localhost:{port}",
-                "description": "Local development server"
-            }
-        ]
+                # Add API versioning information
+                if not schema.info.version:
+                    schema.info.version = "0.2.1"
 
-        # Add API versioning information
-        if not schema.info.version:
-            schema.info.version = "0.2.1"
+                # Convert back to dict for FastAPI
+                openapi_schema = schema.dict(exclude_none=True)
+            except Exception as e:
+                logger.error(f"Error handling OpenAPI schema with openapi-pydantic: {e}")
+                # Fall back to basic schema handling
+                pass
+        else:
+            # Basic schema handling without openapi-pydantic
+            if "components" in openapi_schema and "schemas" in openapi_schema["components"]:
+                new_schemas = {}
+                for key, schema in openapi_schema["components"]["schemas"].items():
+                    # Remove duplicate prefixes while keeping one obsidian_ prefix
+                    if key.startswith("obsidian_"):
+                        parts = key.split("obsidian_")
+                        new_key = f"obsidian_{parts[-1]}"
+                        new_schemas[new_key] = schema
+                    else:
+                        new_schemas[key] = schema
+                openapi_schema["components"]["schemas"] = new_schemas
 
-        # Add security schemes if needed
-        if not schema.components:
-            schema.components = Components()
-        if not schema.components.securitySchemes:
-            schema.components.securitySchemes = {
-                "api_key": {
-                    "type": "apiKey",
-                    "in": "header",
-                    "name": "X-API-Key"
+            # Set proper server configuration
+            openapi_schema["servers"] = [
+                {
+                    "url": f"http://localhost:{port}",
+                    "description": "Local development server"
                 }
-            }
+            ]
 
-        # Convert back to dict for FastAPI
-        openapi_schema = schema.dict(exclude_none=True)
         fastapi_app.openapi_schema = openapi_schema
     
     return fastapi_app.openapi_schema
