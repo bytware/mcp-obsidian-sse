@@ -3,7 +3,7 @@ import logging
 import asyncio
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, List, Optional
 import os
 from dotenv import load_dotenv
 from mcp.server import Server
@@ -16,6 +16,7 @@ from mcp.types import (
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 import uvicorn
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -132,7 +133,93 @@ class SSEManager:
                 await queue.put(f"event: {event_type}\ndata: {event_data}\n\n")
 
 sse_manager = SSEManager()
-fastapi_app = FastAPI()
+
+class ToolParameter(BaseModel):
+    name: str
+    type: str
+    description: str
+
+class ToolDescription(BaseModel):
+    name: str
+    description: str
+    parameters: List[ToolParameter]
+
+class ToolRequest(BaseModel):
+    arguments: Dict[str, Any] = Field(..., description="Arguments for the tool")
+    client_id: Optional[str] = Field(None, description="Optional client ID for SSE updates")
+
+class ToolResponse(BaseModel):
+    status: str = Field(..., description="Status of the tool execution")
+    result: Any = Field(..., description="Result of the tool execution")
+    error: Optional[str] = Field(None, description="Error message if status is 'error'")
+
+class ToolsListResponse(BaseModel):
+    status: str = Field(..., description="Status of the request")
+    tools: List[ToolDescription] = Field(..., description="List of available tools")
+
+def create_tool_routes():
+    """Create FastAPI routes for each tool handler"""
+    routes = []
+    for name, handler in tool_handlers.items():
+        tool_desc = handler.get_tool_description()
+        
+        # Create a closure to capture the current tool_name and tool_handler
+        def create_endpoint(tool_name: str, tool_handler: tools.ToolHandler):
+            async def endpoint(request: ToolRequest):
+                try:
+                    result = tool_handler.run_tool(request.arguments)
+                    return ToolResponse(
+                        status="success",
+                        result=json.loads(result[0].text)
+                    )
+                except Exception as e:
+                    logger.error(str(e))
+                    if request.client_id:
+                        event_data = {
+                            "tool": tool_name,
+                            "arguments": request.arguments,
+                            "status": "error",
+                            "error": str(e)
+                        }
+                        asyncio.create_task(sse_manager.send_event(request.client_id, "tool_error", event_data))
+                    return ToolResponse(
+                        status="error",
+                        error=str(e),
+                        result=None
+                    )
+            return endpoint
+        
+        route = fastapi_app.post(
+            f"/tool/{name}",
+            tags=["Tools"],
+            summary=tool_desc.description,
+            description=f"Execute the {name} tool",
+            response_model=ToolResponse
+        )(create_endpoint(name, handler))
+        routes.append(route)
+    return routes
+
+fastapi_app = FastAPI(
+    title="MCP Obsidian",
+    description="MCP server to work with Obsidian via the remote REST plugin",
+    version="0.2.1",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# Enable CORS
+from fastapi.middleware.cors import CORSMiddleware
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create routes for all tools
+tool_routes = create_tool_routes()
 
 @fastapi_app.get("/sse/{client_id}")
 async def sse_endpoint(client_id: str):
@@ -164,51 +251,28 @@ async def test_event(client_id: str):
     )
     return {"status": "Event sent"}
 
-@fastapi_app.post("/tool/{tool_name}")
-async def call_tool_http(tool_name: str, arguments: dict):
-    try:
-        # Get the tool handler directly
-        tool_handler = get_tool_handler(tool_name)
-        if not tool_handler:
-            raise ValueError(f"Unknown tool: {tool_name}")
-        
-        # Run the tool directly using the handler
-        result = tool_handler.run_tool(arguments)
-        
-        # Pass through the raw response for all tools
-        return json.loads(result[0].text)
-        
-    except Exception as e:
-        logger.error(str(e))
-        # Send error event through SSE if client_id is provided
-        if "client_id" in arguments:
-            client_id = arguments["client_id"]
-            event_data = {
-                "tool": tool_name,
-                "arguments": arguments,
-                "status": "error",
-                "error": str(e)
-            }
-            asyncio.create_task(sse_manager.send_event(client_id, "tool_error", event_data))
-        return {"error": str(e)}
-
-@fastapi_app.get("/tools")
+@fastapi_app.get("/tools", response_model=ToolsListResponse, tags=["Tools"])
 async def list_tools_http():
+    """List all available tools with their descriptions and parameters."""
     tools = await list_tools()
-    return {
-        "status": "success",
-        "tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": [
-                    {"name": param.name, "type": param.type, "description": param.description}
+    return ToolsListResponse(
+        status="success",
+        tools=[
+            ToolDescription(
+                name=tool.name,
+                description=tool.description,
+                parameters=[
+                    ToolParameter(
+                        name=param.name,
+                        type=param.type,
+                        description=param.description
+                    )
                     for param in tool.parameters
                 ] if hasattr(tool, "parameters") else []
-            }
+            )
             for tool in tools
         ]
-    }
+    )
 
 # Modify the main function to run both MCP and FastAPI servers
 async def main():
