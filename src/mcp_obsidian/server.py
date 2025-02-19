@@ -179,6 +179,57 @@ class SSEManager:
                 await queue.put(f"event: {event_type}\ndata: {event_data}\n\n")
 
 sse_manager = SSEManager()
+
+def get_openapi_schema():
+    """Generate a custom OpenAPI schema with proper schema references and server URLs."""
+    if not fastapi_app.openapi_schema:
+        openapi_schema = fastapi_app.openapi()
+        
+        # Fix schema references by removing duplicate prefixes
+        if "components" in openapi_schema and "schemas" in openapi_schema["components"]:
+            new_schemas = {}
+            for key, schema in openapi_schema["components"]["schemas"].items():
+                # Remove duplicate obsidian_ prefixes
+                new_key = key.replace("obsidian_" * 14, "obsidian_")
+                new_schemas[new_key] = schema
+            openapi_schema["components"]["schemas"] = new_schemas
+
+            # Update references in paths
+            for path in openapi_schema["paths"].values():
+                for method in path.values():
+                    if "requestBody" in method:
+                        _fix_refs(method["requestBody"])
+                    if "responses" in method:
+                        for response in method["responses"].values():
+                            if "content" in response:
+                                _fix_refs(response["content"])
+
+        # Set proper server URLs
+        openapi_schema["servers"] = [
+            {
+                "url": f"http://localhost:{port}",
+                "description": "Local development server"
+            }
+        ]
+        
+        fastapi_app.openapi_schema = openapi_schema
+    
+    return fastapi_app.openapi_schema
+
+def _fix_refs(obj):
+    """Recursively fix schema references by removing duplicate prefixes."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "$ref" and isinstance(value, str):
+                if "obsidian_" * 14 in value:
+                    obj[key] = value.replace("obsidian_" * 14, "obsidian_")
+            elif isinstance(value, (dict, list)):
+                _fix_refs(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                _fix_refs(item)
+
 fastapi_app = FastAPI(
     title="MCP Obsidian",
     description="API server to work with Obsidian via the remote REST plugin",
@@ -187,6 +238,9 @@ fastapi_app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json"
 )
+
+# Override the default OpenAPI schema with our custom one
+fastapi_app.openapi = get_openapi_schema
 
 # Enable CORS
 from fastapi.middleware.cors import CORSMiddleware
