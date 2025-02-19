@@ -42,17 +42,14 @@ class ListFilesInVaultToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-
-        api = obsidian.Obsidian(api_key=api_key)
-
-        files = api.list_files_in_vault()
-
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(files, indent=2)
-            )
-        ]
+        api = obsidian.Obsidian(api_key=api_key, protocol='https')
+        result = api.list_files_in_vault()
+        
+        # Log the raw response
+        print("Raw API response:", result)
+        
+        # Return raw response
+        return [TextContent(type="text", text=json.dumps(result))]
     
 class ListFilesInDirToolHandler(ToolHandler):
     def __init__(self):
@@ -75,20 +72,13 @@ class ListFilesInDirToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-
         if "dirpath" not in args:
             raise RuntimeError("dirpath argument missing in arguments")
 
         api = obsidian.Obsidian(api_key=api_key)
+        result = api.list_files_in_dir(args["dirpath"])
 
-        files = api.list_files_in_dir(args["dirpath"])
-
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(files, indent=2)
-            )
-        ]
+        return [TextContent(type="text", text=json.dumps({"files": result}))]
     
 class GetFileContentsToolHandler(ToolHandler):
     def __init__(self):
@@ -116,15 +106,9 @@ class GetFileContentsToolHandler(ToolHandler):
             raise RuntimeError("filepath argument missing in arguments")
 
         api = obsidian.Obsidian(api_key=api_key)
-
         content = api.get_file_contents(args["filepath"])
 
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(content, indent=2)
-            )
-        ]
+        return [TextContent(type="text", text=json.dumps({"content": content}))]
     
 class SearchToolHandler(ToolHandler):
     def __init__(self):
