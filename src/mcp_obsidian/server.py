@@ -92,6 +92,21 @@ class BatchFileContentsRequest(BaseModel):
 class BatchFileContentsResponse(BaseModel):
     contents: Dict[str, str] = Field(description="Map of filepath to file contents")
 
+class ToolDescription(BaseModel):
+    name: str = Field(description="Name of the tool")
+    description: str = Field(description="Description of the tool")
+    parameters: List[Dict[str, str]] = Field(description="List of tool parameters")
+
+class ToolListResponse(BaseModel):
+    status: str = Field(description="Status of the request")
+    tools: List[ToolDescription] = Field(description="List of available tools")
+
+class ToolRequest(BaseModel):
+    arguments: Dict[str, Any] = Field(description="Tool-specific arguments")
+
+class ToolResponse(BaseModel):
+    result: Any = Field(description="Tool execution result")
+
 tool_handlers = {}
 def add_tool_handler(tool_class: tools.ToolHandler):
     global tool_handlers
@@ -188,106 +203,6 @@ class SSEManager:
 
 sse_manager = SSEManager()
 
-def get_openapi_schema():
-    """Generate a custom OpenAPI schema with proper schema references and server URLs."""
-    if not fastapi_app.openapi_schema:
-        openapi_schema = fastapi_app.openapi()
-        
-        if HAS_OPENAPI_PYDANTIC:
-            try:
-                # Use openapi-pydantic for enhanced schema handling
-                schema = OpenAPI.parse_obj(openapi_schema)
-                
-                # Clean up schema references
-                if schema.components and schema.components.schemas:
-                    new_schemas: Dict[str, Union[Schema, Reference]] = {}
-                    for key, schema_obj in schema.components.schemas.items():
-                        # Remove duplicate prefixes while keeping one obsidian_ prefix
-                        new_key = key
-                        if key.startswith("obsidian_"):
-                            parts = key.split("obsidian_")
-                            new_key = f"obsidian_{parts[-1]}"
-                        new_schemas[new_key] = schema_obj
-                    
-                    # Update the components with cleaned schemas
-                    schema.components.schemas = new_schemas
-
-                # Update schema references in paths
-                if schema.paths:
-                    for path in schema.paths.values():
-                        for operation in path.__dict__.values():
-                            if not operation:
-                                continue
-                            if operation.requestBody:
-                                _update_schema_refs(operation.requestBody)
-                            if operation.responses:
-                                for response in operation.responses.values():
-                                    if response.content:
-                                        for media_type in response.content.values():
-                                            if media_type.schema_:
-                                                _update_schema_refs(media_type.schema_)
-
-                # Set proper server configuration
-                schema.servers = [
-                    {
-                        "url": f"http://localhost:{port}",
-                        "description": "Local development server"
-                    }
-                ]
-
-                # Add API versioning information
-                if not schema.info.version:
-                    schema.info.version = "0.2.1"
-
-                # Convert back to dict for FastAPI
-                openapi_schema = schema.dict(exclude_none=True)
-            except Exception as e:
-                logger.error(f"Error handling OpenAPI schema with openapi-pydantic: {e}")
-                # Fall back to basic schema handling
-                pass
-        else:
-            # Basic schema handling without openapi-pydantic
-            if "components" in openapi_schema and "schemas" in openapi_schema["components"]:
-                new_schemas = {}
-                for key, schema in openapi_schema["components"]["schemas"].items():
-                    # Remove duplicate prefixes while keeping one obsidian_ prefix
-                    if key.startswith("obsidian_"):
-                        parts = key.split("obsidian_")
-                        new_key = f"obsidian_{parts[-1]}"
-                        new_schemas[new_key] = schema
-                    else:
-                        new_schemas[key] = schema
-                openapi_schema["components"]["schemas"] = new_schemas
-
-            # Set proper server configuration
-            openapi_schema["servers"] = [
-                {
-                    "url": f"http://localhost:{port}",
-                    "description": "Local development server"
-                }
-            ]
-
-        fastapi_app.openapi_schema = openapi_schema
-    
-    return fastapi_app.openapi_schema
-
-def _update_schema_refs(obj: Any) -> None:
-    """Recursively update schema references to use cleaned up names."""
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if key == "$ref" and isinstance(value, str):
-                if "obsidian_" in value:
-                    parts = value.split("obsidian_")
-                    base_path = value[:value.rindex("obsidian_")]
-                    new_ref = f"{base_path}obsidian_{parts[-1]}"
-                    obj[key] = new_ref
-            elif isinstance(value, (dict, list)):
-                _update_schema_refs(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            if isinstance(item, (dict, list)):
-                _update_schema_refs(item)
-
 # Create FastAPI application with enhanced OpenAPI support
 fastapi_app = FastAPI(
     title="MCP Obsidian",
@@ -298,9 +213,6 @@ fastapi_app = FastAPI(
     openapi_url="/openapi.json",
     swagger_ui_parameters={"defaultModelsExpandDepth": -1}  # Collapse schemas by default
 )
-
-# Override the default OpenAPI schema with our enhanced version
-fastapi_app.openapi = get_openapi_schema
 
 # Enable CORS
 from fastapi.middleware.cors import CORSMiddleware
@@ -342,36 +254,9 @@ async def test_event(client_id: str):
     )
     return {"status": "Event sent"}
 
-@fastapi_app.post("/tool/{tool_name}")
-async def call_tool_http(tool_name: str, arguments: dict):
-    try:
-        # Get the tool handler directly
-        tool_handler = get_tool_handler(tool_name)
-        if not tool_handler:
-            raise ValueError(f"Unknown tool: {tool_name}")
-        
-        # Run the tool directly using the handler
-        result = tool_handler.run_tool(arguments)
-        
-        # Pass through the raw response for all tools
-        return json.loads(result[0].text)
-        
-    except Exception as e:
-        logger.error(str(e))
-        # Send error event through SSE if client_id is provided
-        if "client_id" in arguments:
-            client_id = arguments["client_id"]
-            event_data = {
-                "tool": tool_name,
-                "arguments": arguments,
-                "status": "error",
-                "error": str(e)
-            }
-            asyncio.create_task(sse_manager.send_event(client_id, "tool_error", event_data))
-        return {"error": str(e)}
-
-@fastapi_app.get("/tools")
+@fastapi_app.get("/tools", tags=["Tools"], response_model=ToolListResponse)
 async def list_tools_http():
+    """Lists all available tools in the Obsidian vault."""
     tools = await list_tools()
     return {
         "status": "success",
@@ -388,28 +273,57 @@ async def list_tools_http():
         ]
     }
 
-@fastapi_app.get("/vault/files", response_model=ListFilesResponse, tags=["Files"])
+@fastapi_app.post("/tool/{tool_name}", tags=["Tools"], response_model=ToolResponse)
+async def call_tool_http(tool_name: str, arguments: Dict[str, Any]):
+    """Execute a specific tool with the provided arguments."""
+    try:
+        # Get the tool handler directly
+        tool_handler = get_tool_handler(tool_name)
+        if not tool_handler:
+            raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+        
+        # Run the tool directly using the handler
+        result = tool_handler.run_tool(arguments)
+        
+        # Pass through the raw response for all tools
+        return {"result": json.loads(result[0].text)}
+        
+    except Exception as e:
+        logger.error(str(e))
+        # Send error event through SSE if client_id is provided
+        if "client_id" in arguments:
+            client_id = arguments["client_id"]
+            event_data = {
+                "tool": tool_name,
+                "arguments": arguments,
+                "status": "error",
+                "error": str(e)
+            }
+            asyncio.create_task(sse_manager.send_event(client_id, "tool_error", event_data))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@fastapi_app.get("/vault/files", tags=["Files"], response_model=ListFilesResponse)
 async def list_files_in_vault():
     """Lists all files and directories in the root directory of your Obsidian vault."""
     tool_handler = tools.ListFilesInVaultToolHandler()
     result = tool_handler.run_tool({})
     return {"files": json.loads(result[0].text)}
 
-@fastapi_app.post("/dir/files", response_model=ListFilesResponse, tags=["Files"])
+@fastapi_app.post("/dir/files", tags=["Files"], response_model=ListFilesResponse)
 async def list_files_in_dir(request: DirPathRequest):
     """Lists all files and directories that exist in a specific Obsidian directory."""
     tool_handler = tools.ListFilesInDirToolHandler()
     result = tool_handler.run_tool({"dirpath": request.dirpath})
     return json.loads(result[0].text)
 
-@fastapi_app.post("/file/contents", response_model=FileContentResponse, tags=["Files"])
+@fastapi_app.post("/file/contents", tags=["Files"], response_model=FileContentResponse)
 async def get_file_contents(request: FilePathRequest):
     """Return the content of a single file in your vault."""
     tool_handler = tools.GetFileContentsToolHandler()
     result = tool_handler.run_tool({"filepath": request.filepath})
     return json.loads(result[0].text)
 
-@fastapi_app.post("/search", response_model=SearchResponse, tags=["Search"])
+@fastapi_app.post("/search", tags=["Search"], response_model=SearchResponse)
 async def search(request: SearchRequest):
     """Simple search for documents matching a specified text query across all files in the vault."""
     tool_handler = tools.SearchToolHandler()
@@ -442,7 +356,7 @@ async def patch_content(request: PatchContentRequest):
     })
     return {"message": result[0].text}
 
-@fastapi_app.post("/search/complex", response_model=SearchResponse, tags=["Search"])
+@fastapi_app.post("/search/complex", tags=["Search"], response_model=SearchResponse)
 async def complex_search(request: SearchRequest):
     """Complex search for documents matching a specified text query across all files in the vault."""
     tool_handler = tools.ComplexSearchToolHandler()
@@ -452,7 +366,7 @@ async def complex_search(request: SearchRequest):
     })
     return {"results": json.loads(result[0].text)}
 
-@fastapi_app.post("/file/batch-contents", response_model=BatchFileContentsResponse, tags=["Files"])
+@fastapi_app.post("/file/batch-contents", tags=["Files"], response_model=BatchFileContentsResponse)
 async def batch_get_file_contents(request: BatchFileContentsRequest):
     """Return the content of multiple files in your vault."""
     tool_handler = tools.BatchGetFileContentsToolHandler()
