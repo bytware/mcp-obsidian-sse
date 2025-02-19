@@ -307,14 +307,18 @@ async def list_files_in_vault():
     """Lists all files and directories in the root directory of your Obsidian vault."""
     tool_handler = tools.ListFilesInVaultToolHandler()
     result = tool_handler.run_tool({})
-    return {"files": json.loads(result[0].text)}
+    response_data = json.loads(result[0].text)
+    # Extract the files list from the response
+    return {"files": response_data.get("files", [])}
 
 @fastapi_app.post("/dir/files", tags=["Files"], response_model=ListFilesResponse)
 async def list_files_in_dir(request: DirPathRequest):
     """Lists all files and directories that exist in a specific Obsidian directory."""
     tool_handler = tools.ListFilesInDirToolHandler()
     result = tool_handler.run_tool({"dirpath": request.dirpath})
-    return json.loads(result[0].text)
+    response_data = json.loads(result[0].text)
+    # Extract the files list from the response
+    return {"files": response_data.get("files", [])}
 
 @fastapi_app.post("/file/contents", tags=["Files"], response_model=FileContentResponse)
 async def get_file_contents(request: FilePathRequest):
