@@ -53,8 +53,8 @@ class ListFilesResponse(BaseModel):
 class FileContentResponse(BaseModel):
     content: str = Field(description="Content of the file")
 
-class DirPathRequest(BaseModel):
-    dirpath: str = Field(description="Path to list files from (relative to your vault root)")
+class DirRequest(BaseModel):
+    dirpath: str
 
 class FilePathRequest(BaseModel):
     filepath: str = Field(description="Path to the file (relative to vault root)")
@@ -273,23 +273,48 @@ async def list_tools_http():
         ]
     }
 
-@fastapi_app.post("/tool/{tool_name}", tags=["Tools"], response_model=ToolResponse)
+@fastapi_app.post("/tool/{tool_name}", tags=["Tools"])
 async def call_tool_http(tool_name: str, arguments: Dict[str, Any]):
     """Execute a specific tool with the provided arguments."""
     try:
         # Get the tool handler directly
         tool_handler = get_tool_handler(tool_name)
         if not tool_handler:
-            raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+            logger.error(f"Unknown tool: {tool_name}")
+            # Return a structured error response
+            return {
+                "error": f"Unknown tool: {tool_name}",
+                "status": "error",
+                "files": [] if tool_name in ["ListFilesInDir", "ListFilesInVault"] else None
+            }
         
-        # Run the tool directly using the handler
-        result = tool_handler.run_tool(arguments)
-        
-        # Pass through the raw response for all tools
-        return {"result": json.loads(result[0].text)}
+        try:
+            # Run the tool directly using the handler
+            result = tool_handler.run_tool(arguments)
+            
+            # Parse the result
+            parsed_result = json.loads(result[0].text)
+            
+            # Add status field
+            parsed_result["status"] = "success"
+            
+            # Return the result
+            return parsed_result
+            
+        except Exception as e:
+            # Log the specific tool execution error
+            logger.error(f"Error running tool {tool_name}: {str(e)}")
+            
+            # Return an appropriate error response based on tool type
+            if tool_name in ["ListFilesInDir", "ListFilesInVault"]:
+                return {"error": str(e), "status": "error", "files": []}
+            else:
+                return {"error": str(e), "status": "error"}
         
     except Exception as e:
-        logger.error(str(e))
+        # Log the overall error
+        logger.error(f"Error in call_tool_http: {str(e)}")
+        
         # Send error event through SSE if client_id is provided
         if "client_id" in arguments:
             client_id = arguments["client_id"]
@@ -300,7 +325,13 @@ async def call_tool_http(tool_name: str, arguments: Dict[str, Any]):
                 "error": str(e)
             }
             asyncio.create_task(sse_manager.send_event(client_id, "tool_error", event_data))
-        raise HTTPException(status_code=500, detail=str(e))
+        
+        # Return a structured error response
+        return {
+            "error": str(e),
+            "status": "error",
+            "files": [] if tool_name in ["ListFilesInDir", "ListFilesInVault"] else None
+        }
 
 @fastapi_app.get("/vault/files", tags=["Files"], response_model=ListFilesResponse)
 async def list_files_in_vault():
@@ -312,13 +343,24 @@ async def list_files_in_vault():
     return {"files": response_data.get("files", [])}
 
 @fastapi_app.post("/dir/files", tags=["Files"], response_model=ListFilesResponse)
-async def list_files_in_dir(request: DirPathRequest):
-    """Lists all files and directories that exist in a specific Obsidian directory."""
-    tool_handler = tools.ListFilesInDirToolHandler()
-    result = tool_handler.run_tool({"dirpath": request.dirpath})
-    response_data = json.loads(result[0].text)
-    # Extract the files list from the response
-    return {"files": response_data.get("files", [])}
+async def list_files_in_dir(request: DirRequest):
+    """Lists all files and directories that exist in a specific directory."""
+    try:
+        tool_handler = get_tool_handler(TOOL_LIST_FILES_IN_DIR)
+        if not tool_handler:
+            logger.error(f"Tool handler {TOOL_LIST_FILES_IN_DIR} not found")
+            return {"files": []}
+        
+        try:
+            result = tool_handler.run_tool({"dirpath": request.dirpath})
+            parsed_result = json.loads(result[0].text)
+            return parsed_result
+        except Exception as e:
+            logger.error(f"Error listing files in directory '{request.dirpath}': {str(e)}")
+            return {"files": [], "error": str(e)}
+    except Exception as e:
+        logger.error(f"Unexpected error in list_files_in_dir endpoint: {str(e)}")
+        return {"files": [], "error": str(e)}
 
 @fastapi_app.post("/file/contents", tags=["Files"], response_model=FileContentResponse)
 async def get_file_contents(request: FilePathRequest):

@@ -37,19 +37,25 @@ class ListFilesInVaultToolHandler(ToolHandler):
             inputSchema={
                 "type": "object",
                 "properties": {},
-                "required": []
-            },
+                "additionalProperties": False,
+            }
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        api = obsidian.Obsidian(api_key=api_key, protocol='https')
-        result = api.list_files_in_vault()
-        
-        # Log the raw response
-        print("Raw API response:", result)
-        
-        # Return raw response
-        return [TextContent(type="text", text=json.dumps(result))]
+        try:
+            api = obsidian.Obsidian(api_key=api_key, protocol='https')
+            result = api.list_files_in_vault()
+            
+            # Ensure result is a list, even if None is returned
+            if result is None:
+                result = []
+                
+            return [TextContent(type="text", text=json.dumps({"files": result}))]
+        except Exception as e:
+            # Log the error
+            print(f"Error in ListFilesInVaultToolHandler: {str(e)}")
+            # Return empty list instead of raising exception
+            return [TextContent(type="text", text=json.dumps({"files": [], "error": str(e)}))]
     
 class ListFilesInDirToolHandler(ToolHandler):
     def __init__(self):
@@ -72,13 +78,23 @@ class ListFilesInDirToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        if "dirpath" not in args:
-            raise RuntimeError("dirpath argument missing in arguments")
+        try:
+            if "dirpath" not in args:
+                raise RuntimeError("dirpath argument missing in arguments")
 
-        api = obsidian.Obsidian(api_key=api_key)
-        result = api.list_files_in_dir(args["dirpath"])
-
-        return [TextContent(type="text", text=json.dumps({"files": result}))]
+            api = obsidian.Obsidian(api_key=api_key)
+            result = api.list_files_in_dir(args["dirpath"])
+            
+            # Ensure result is a list, even if None is returned
+            if result is None:
+                result = []
+                
+            return [TextContent(type="text", text=json.dumps({"files": result}))]
+        except Exception as e:
+            # Log the error
+            print(f"Error in ListFilesInDirToolHandler: {str(e)}")
+            # Return empty list instead of raising exception
+            return [TextContent(type="text", text=json.dumps({"files": [], "error": str(e)}))]
     
 class GetFileContentsToolHandler(ToolHandler):
     def __init__(self):

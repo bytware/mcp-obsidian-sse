@@ -34,8 +34,19 @@ class Obsidian():
             error_data = e.response.json() if e.response.content else {}
             code = error_data.get('errorCode', -1) 
             message = error_data.get('message', '<unknown>')
+            
+            # For 404 errors on directory requests, return empty file list instead of raising an exception
+            if code == 40400 and callable(f) and f.__name__ == 'call_fn' and 'list_files_in_dir' in str(f.__closure__):
+                print(f"Path not found, returning empty file list")
+                return {'files': []}
+                
+            # Log the error for debugging
+            print(f"API Error: {code}: {message}")
+            
+            # Re-raise the exception with a better message
             raise Exception(f"Error {code}: {message}")
         except requests.exceptions.RequestException as e:
+            print(f"Request failed: {str(e)}")
             raise Exception(f"Request failed: {str(e)}")
 
     def list_files_in_vault(self) -> Any:
@@ -48,14 +59,19 @@ class Obsidian():
             print(f"Response status: {response.status_code}")
             print(f"Response content: {response.content}")
             response.raise_for_status()
-            
+
             data = response.json()
             print(f"Parsed JSON: {data}")
-            return data  # Return the full response instead of just data['files']
+            print(f"Raw API response: {data}")
+            return data['files']
 
-        return self._safe_call(call_fn)
+        try:
+            return self._safe_call(call_fn)
+        except Exception as e:
+            # Return empty list for any error in vault listing
+            print(f"Error listing files in vault: {str(e)}")
+            return []
 
-        
     def list_files_in_dir(self, dirpath: str) -> Any:
         url = f"{self.get_base_url()}/vault/{dirpath}/"
         
@@ -69,9 +85,15 @@ class Obsidian():
             
             data = response.json()
             print(f"Parsed JSON: {data}")
+            print(f"Raw API response: {data}")
             return data['files']
 
-        return self._safe_call(call_fn)
+        try:
+            return self._safe_call(call_fn)
+        except Exception as e:
+            # Return empty list for any error in directory listing
+            print(f"Error listing files in directory '{dirpath}': {str(e)}")
+            return []
 
     def get_file_contents(self, filepath: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
