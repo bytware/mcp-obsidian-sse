@@ -15,6 +15,7 @@ if api_key == "":
 
 TOOL_LIST_FILES_IN_VAULT = "obsidian_list_files_in_vault"
 TOOL_LIST_FILES_IN_DIR = "obsidian_list_files_in_dir"
+TOOL_LIST_ALL_FILES = "obsidian_list_all_files"
 
 class ToolHandler():
     def __init__(self, tool_name: str):
@@ -118,13 +119,29 @@ class GetFileContentsToolHandler(ToolHandler):
         )
 
     def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        if "filepath" not in args:
-            raise RuntimeError("filepath argument missing in arguments")
+        try:
+            if "filepath" not in args:
+                raise RuntimeError("filepath argument missing in arguments")
 
-        api = obsidian.Obsidian(api_key=api_key)
-        content = api.get_file_contents(args["filepath"])
-
-        return [TextContent(type="text", text=json.dumps({"content": content}))]
+            api = obsidian.Obsidian(api_key=api_key)
+            content = api.get_file_contents(args["filepath"])
+            
+            # Handle empty content from errors
+            if content == "":
+                return [TextContent(type="text", text=json.dumps({
+                    "content": "",
+                    "error": f"File not found or unable to read: {args['filepath']}"
+                }))]
+                
+            return [TextContent(type="text", text=json.dumps({"content": content}))]
+        except Exception as e:
+            # Log the error
+            print(f"Error in GetFileContentsToolHandler: {str(e)}")
+            # Return error information instead of raising exception
+            return [TextContent(type="text", text=json.dumps({
+                "content": "",
+                "error": str(e)
+            }))]
     
 class SearchToolHandler(ToolHandler):
     def __init__(self):
@@ -214,18 +231,49 @@ class AppendContentToolHandler(ToolHandler):
        )
 
    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-       if "filepath" not in args or "content" not in args:
-           raise RuntimeError("filepath and content arguments required")
+       try:
+           if "filepath" not in args or "content" not in args:
+               raise RuntimeError("filepath and content arguments required")
 
-       api = obsidian.Obsidian(api_key=api_key)
-       api.append_content(args.get("filepath", ""), args["content"])
+           api = obsidian.Obsidian(api_key=api_key)
+           result = api.append_content(args.get("filepath", ""), args["content"])
+           
+           # Check if there was an error
+           if isinstance(result, dict) and "error" in result:
+               return [
+                   TextContent(
+                       type="text",
+                       text=json.dumps({
+                           "success": False,
+                           "error": result["error"],
+                           "message": f"Failed to append content to {args['filepath']}"
+                       })
+                   )
+               ]
 
-       return [
-           TextContent(
-               type="text",
-               text=f"Successfully appended content to {args['filepath']}"
-           )
-       ]
+           return [
+               TextContent(
+                   type="text",
+                   text=json.dumps({
+                       "success": True,
+                       "message": f"Successfully appended content to {args['filepath']}"
+                   })
+               )
+           ]
+       except Exception as e:
+           # Log the error
+           print(f"Error in AppendContentToolHandler: {str(e)}")
+           # Return error information instead of raising exception
+           return [
+               TextContent(
+                   type="text",
+                   text=json.dumps({
+                       "success": False,
+                       "error": str(e),
+                       "message": f"Failed to append content to {args.get('filepath', '')}"
+                   })
+               )
+           ]
    
 class PatchContentToolHandler(ToolHandler):
    def __init__(self):
@@ -267,25 +315,56 @@ class PatchContentToolHandler(ToolHandler):
        )
 
    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-       required = ["filepath", "operation", "target_type", "target", "content"]
-       if not all(key in args for key in required):
-           raise RuntimeError(f"Missing required arguments: {', '.join(required)}")
+       try:
+           required = ["filepath", "operation", "target_type", "target", "content"]
+           if not all(key in args for key in required):
+               raise RuntimeError(f"Missing required arguments: {', '.join(required)}")
 
-       api = obsidian.Obsidian(api_key=api_key)
-       api.patch_content(
-           args.get("filepath", ""),
-           args.get("operation", ""),
-           args.get("target_type", ""),
-           args.get("target", ""),
-           args.get("content", "")
-       )
-
-       return [
-           TextContent(
-               type="text",
-               text=f"Successfully patched content in {args['filepath']}"
+           api = obsidian.Obsidian(api_key=api_key)
+           result = api.patch_content(
+               args.get("filepath", ""),
+               args.get("operation", ""),
+               args.get("target_type", ""),
+               args.get("target", ""),
+               args.get("content", "")
            )
-       ]
+           
+           # Check if there was an error
+           if isinstance(result, dict) and "error" in result:
+               return [
+                   TextContent(
+                       type="text",
+                       text=json.dumps({
+                           "success": False,
+                           "error": result["error"],
+                           "message": f"Failed to patch content in {args['filepath']}"
+                       })
+                   )
+               ]
+
+           return [
+               TextContent(
+                   type="text",
+                   text=json.dumps({
+                       "success": True,
+                       "message": f"Successfully patched content in {args['filepath']}"
+                   })
+               )
+           ]
+       except Exception as e:
+           # Log the error
+           print(f"Error in PatchContentToolHandler: {str(e)}")
+           # Return error information instead of raising exception
+           return [
+               TextContent(
+                   type="text",
+                   text=json.dumps({
+                       "success": False,
+                       "error": str(e),
+                       "message": f"Failed to patch content in {args.get('filepath', '')}"
+                   })
+               )
+           ]
    
 class ComplexSearchToolHandler(ToolHandler):
    def __init__(self):
@@ -363,3 +442,55 @@ class BatchGetFileContentsToolHandler(ToolHandler):
                 text=content
             )
         ]
+
+class ListAllFilesToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__(TOOL_LIST_ALL_FILES)
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description="Lists all files in the Obsidian vault with their complete paths, including those in nested directories.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        try:
+            api = obsidian.Obsidian(api_key=api_key)
+            
+            # Get all files from root and subdirectories recursively
+            all_files = []
+            
+            # Helper function to recursively explore directories
+            def explore_directory(path="", prefix=""):
+                # Get all files in the current directory
+                dir_entries = api.list_files_in_dir(path) if path else api.list_files_in_vault()
+                
+                # Process each entry
+                for entry in dir_entries:
+                    full_path = f"{prefix}{entry}"
+                    
+                    if entry.endswith('/'):
+                        # This is a directory, explore it recursively
+                        subdir_path = path + "/" + entry[:-1] if path else entry[:-1]
+                        explore_directory(subdir_path, full_path)
+                    else:
+                        # This is a file, add it to the list
+                        all_files.append(full_path)
+            
+            # Start recursive exploration from root
+            explore_directory()
+            
+            # Sort the list for consistency
+            all_files.sort()
+            
+            return [TextContent(type="text", text=json.dumps({"files": all_files}))]
+        except Exception as e:
+            # Log the error
+            print(f"Error in ListAllFilesToolHandler: {str(e)}")
+            # Return empty list instead of raising exception
+            return [TextContent(type="text", text=json.dumps({"files": [], "error": str(e)}))]

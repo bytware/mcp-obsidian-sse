@@ -35,10 +35,16 @@ class Obsidian():
             code = error_data.get('errorCode', -1) 
             message = error_data.get('message', '<unknown>')
             
-            # For 404 errors on directory requests, return empty file list instead of raising an exception
-            if code == 40400 and callable(f) and f.__name__ == 'call_fn' and 'list_files_in_dir' in str(f.__closure__):
-                print(f"Path not found, returning empty file list")
-                return {'files': []}
+            # For 404 errors, return appropriate fallback values instead of raising exceptions
+            if code == 40400 and callable(f) and f.__name__ == 'call_fn':
+                # For directory listings, return empty file list
+                if 'list_files_in_dir' in str(f.__closure__) or 'list_files_in_vault' in str(f.__closure__):
+                    print(f"Path not found, returning empty file list")
+                    return {'files': []}
+                # For file operations, return appropriate empty response
+                elif 'get_file_contents' in str(f.__closure__):
+                    print(f"File not found, returning empty content")
+                    return ''
                 
             # Log the error for debugging
             print(f"API Error: {code}: {message}")
@@ -99,12 +105,21 @@ class Obsidian():
         url = f"{self.get_base_url()}/vault/{filepath}"
     
         def call_fn():
+            print(f"Making request to: {url}")
+            print(f"Headers: {self._get_headers()}")
             response = requests.get(url, headers=self._get_headers(), verify=self.verify_ssl, timeout=self.timeout)
+            print(f"Response status: {response.status_code}")
+            print(f"Response content length: {len(response.content)} bytes")
             response.raise_for_status()
             
             return response.text
 
-        return self._safe_call(call_fn)
+        try:
+            return self._safe_call(call_fn)
+        except Exception as e:
+            # Return empty string for any error in file content retrieval
+            print(f"Error getting contents of file '{filepath}': {str(e)}")
+            return ""
     
     def get_batch_file_contents(self, filepaths: list[str]) -> str:
         """Get contents of multiple files and concatenate them with headers.
@@ -120,7 +135,10 @@ class Obsidian():
         for filepath in filepaths:
             try:
                 content = self.get_file_contents(filepath)
-                result.append(f"# {filepath}\n\n{content}\n\n---\n\n")
+                if content == "":
+                    result.append(f"# {filepath}\n\nFile not found or unable to read.\n\n---\n\n")
+                else:
+                    result.append(f"# {filepath}\n\n{content}\n\n---\n\n")
             except Exception as e:
                 # Add error message but continue processing other files
                 result.append(f"# {filepath}\n\nError reading file: {str(e)}\n\n---\n\n")
@@ -145,6 +163,8 @@ class Obsidian():
         url = f"{self.get_base_url()}/vault/{filepath}"
         
         def call_fn():
+            print(f"Making request to: {url}")
+            print(f"Headers: {self._get_headers() | {'Content-Type': 'text/markdown'}}")
             response = requests.post(
                 url, 
                 headers=self._get_headers() | {'Content-Type': 'text/markdown'}, 
@@ -152,10 +172,15 @@ class Obsidian():
                 verify=self.verify_ssl,
                 timeout=self.timeout
             )
+            print(f"Response status: {response.status_code}")
             response.raise_for_status()
             return None
 
-        return self._safe_call(call_fn)
+        try:
+            return self._safe_call(call_fn)
+        except Exception as e:
+            print(f"Error appending content to file '{filepath}': {str(e)}")
+            return {"error": str(e)}
     
     def patch_content(self, filepath: str, operation: str, target_type: str, target: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
@@ -168,11 +193,18 @@ class Obsidian():
         }
         
         def call_fn():
+            print(f"Making request to: {url}")
+            print(f"Headers: {headers}")
             response = requests.patch(url, headers=headers, data=content, verify=self.verify_ssl, timeout=self.timeout)
+            print(f"Response status: {response.status_code}")
             response.raise_for_status()
             return None
 
-        return self._safe_call(call_fn)
+        try:
+            return self._safe_call(call_fn)
+        except Exception as e:
+            print(f"Error patching content in file '{filepath}': {str(e)}")
+            return {"error": str(e)}
     
     def search_json(self, query: dict) -> Any:
         url = f"{self.get_base_url()}/search/"

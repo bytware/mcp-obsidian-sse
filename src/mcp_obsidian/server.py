@@ -127,6 +127,7 @@ add_tool_handler(tools.PatchContentToolHandler())
 add_tool_handler(tools.AppendContentToolHandler())
 add_tool_handler(tools.ComplexSearchToolHandler())
 add_tool_handler(tools.BatchGetFileContentsToolHandler())
+add_tool_handler(tools.ListAllFilesToolHandler())
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
@@ -365,9 +366,20 @@ async def list_files_in_dir(request: DirRequest):
 @fastapi_app.post("/file/contents", tags=["Files"], response_model=FileContentResponse)
 async def get_file_contents(request: FilePathRequest):
     """Return the content of a single file in your vault."""
-    tool_handler = tools.GetFileContentsToolHandler()
-    result = tool_handler.run_tool({"filepath": request.filepath})
-    return json.loads(result[0].text)
+    try:
+        tool_handler = tools.GetFileContentsToolHandler()
+        result = tool_handler.run_tool({"filepath": request.filepath})
+        parsed_result = json.loads(result[0].text)
+        
+        # Check if there was an error
+        if "error" in parsed_result:
+            logger.error(f"Error getting file contents: {parsed_result['error']}")
+            # We still return the parsed result with the error for better client handling
+        
+        return parsed_result
+    except Exception as e:
+        logger.error(f"Unexpected error in get_file_contents endpoint: {str(e)}")
+        return {"content": "", "error": str(e)}
 
 @fastapi_app.post("/search", tags=["Search"], response_model=SearchResponse)
 async def search(request: SearchRequest):
@@ -382,25 +394,53 @@ async def search(request: SearchRequest):
 @fastapi_app.post("/file/append", tags=["Files"])
 async def append_content(request: AppendContentRequest):
     """Append content to a new or existing file in the vault."""
-    tool_handler = tools.AppendContentToolHandler()
-    result = tool_handler.run_tool({
-        "filepath": request.filepath,
-        "content": request.content
-    })
-    return {"message": result[0].text}
+    try:
+        tool_handler = tools.AppendContentToolHandler()
+        result = tool_handler.run_tool({
+            "filepath": request.filepath,
+            "content": request.content
+        })
+        parsed_result = json.loads(result[0].text)
+        
+        # Check if there was an error
+        if not parsed_result.get("success", True):
+            logger.error(f"Error appending content: {parsed_result.get('error', 'Unknown error')}")
+        
+        return parsed_result
+    except Exception as e:
+        logger.error(f"Unexpected error in append_content endpoint: {str(e)}")
+        return {
+            "success": False, 
+            "error": str(e),
+            "message": f"Failed to append content to {request.filepath}"
+        }
 
 @fastapi_app.post("/file/patch", tags=["Files"])
 async def patch_content(request: PatchContentRequest):
     """Insert content into an existing note relative to a heading, block reference, or frontmatter field."""
-    tool_handler = tools.PatchContentToolHandler()
-    result = tool_handler.run_tool({
-        "filepath": request.filepath,
-        "operation": request.operation,
-        "target_type": request.target_type,
-        "target": request.target,
-        "content": request.content
-    })
-    return {"message": result[0].text}
+    try:
+        tool_handler = tools.PatchContentToolHandler()
+        result = tool_handler.run_tool({
+            "filepath": request.filepath,
+            "operation": request.operation,
+            "target_type": request.target_type,
+            "target": request.target,
+            "content": request.content
+        })
+        parsed_result = json.loads(result[0].text)
+        
+        # Check if there was an error
+        if not parsed_result.get("success", True):
+            logger.error(f"Error patching content: {parsed_result.get('error', 'Unknown error')}")
+        
+        return parsed_result
+    except Exception as e:
+        logger.error(f"Unexpected error in patch_content endpoint: {str(e)}")
+        return {
+            "success": False, 
+            "error": str(e),
+            "message": f"Failed to patch content in {request.filepath}"
+        }
 
 @fastapi_app.post("/search/complex", tags=["Search"], response_model=SearchResponse)
 async def complex_search(request: SearchRequest):
@@ -418,6 +458,24 @@ async def batch_get_file_contents(request: BatchFileContentsRequest):
     tool_handler = tools.BatchGetFileContentsToolHandler()
     result = tool_handler.run_tool({"filepaths": request.filepaths})
     return json.loads(result[0].text)
+
+@fastapi_app.get("/vault/all-files", tags=["Files"])
+async def list_all_files():
+    """Lists all files in the vault with their complete paths."""
+    try:
+        tool_handler = tools.ListAllFilesToolHandler()
+        result = tool_handler.run_tool({})
+        parsed_result = json.loads(result[0].text)
+        
+        # Check if there was an error
+        if "error" in parsed_result:
+            logger.error(f"Error listing all files: {parsed_result['error']}")
+            # We still return the parsed result with the error for better client handling
+        
+        return parsed_result
+    except Exception as e:
+        logger.error(f"Unexpected error in list_all_files endpoint: {str(e)}")
+        return {"files": [], "error": str(e)}
 
 # Modify the main function to run both MCP and FastAPI servers
 async def main():
